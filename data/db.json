@@ -1,0 +1,21 @@
+{
+  "guilds": {
+    "1518279745123647509": {
+      "config": {
+        "autoroleId": null,
+        "welcome": null,
+        "goodbye": null,
+        "logChannelId": null,
+        "staffApplyMessage": null,
+        "staffApplyLink": null,
+        "ticketLogChannelId": null
+      },
+      "afk": {},
+      "warnings": {},
+      "offenses": {},
+      "chatFilters": [],
+      "giveaways": [],
+      "tickets": {}
+    }
+  }
+}

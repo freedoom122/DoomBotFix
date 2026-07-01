@@ -1,143 +1,135 @@
 require("dotenv").config();
-const {
-  Client,
-  GatewayIntentBits,
-  PermissionsBitField,
-  ChannelType
-} = require("discord.js");
+const { Client, GatewayIntentBits, Partials, Events } = require("discord.js");
+const { loadDB, saveDB, guild } = require("./storage");
+const { run, escapeRegex, ms } = require("./commands");
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMessageReactions
+  ],
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User]
 });
 
-// helper
-async function makeRole(guild, data) {
-  return guild.roles.create(data);
+const db = loadDB();
+
+function applyTemplate(text, user, guildName) {
+  return String(text || "")
+    .replaceAll("{user}", `<@${user.id}>`)
+    .replaceAll("{username}", user.username)
+    .replaceAll("{guild}", guildName);
 }
 
-async function makeCategory(guild, name, perms) {
-  return guild.channels.create({
-    name,
-    type: ChannelType.GuildCategory,
-    permissionOverwrites: perms
-  });
-}
-
-async function makeChannel(guild, name, type, parent, perms) {
-  return guild.channels.create({
-    name,
-    type,
-    parent,
-    permissionOverwrites: perms
-  });
-}
-
-client.once("ready", () => {
-  console.log(`Logged in as ${client.user.tag}`);
+client.once(Events.ClientReady, () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName !== "servermake") return;
+client.on(Events.GuildMemberAdd, async (member) => {
+  const g = guild(db, member.guild.id);
 
-  const guild = interaction.guild;
-  const everyone = guild.roles.everyone.id;
-
-  await interaction.reply({ content: "Building server...", ephemeral: true });
-
-  // =========================
-  // ROLES
-  // =========================
-
-  const roles = {};
-
-  const roleData = [
-    ["👑 Founder", [PermissionsBitField.Flags.Administrator]],
-    ["🖤 Co-Owner", [PermissionsBitField.Flags.Administrator]],
-    ["🛡️ Head Admin", [
-      PermissionsBitField.Flags.ManageGuild,
-      PermissionsBitField.Flags.ManageRoles,
-      PermissionsBitField.Flags.ManageChannels,
-      PermissionsBitField.Flags.BanMembers,
-      PermissionsBitField.Flags.KickMembers
-    ]],
-    ["💻 Developer", []],
-    ["🎨 Artist", []],
-    ["🔍 Moderator", [
-      PermissionsBitField.Flags.KickMembers,
-      PermissionsBitField.Flags.BanMembers,
-      PermissionsBitField.Flags.ManageMessages
-    ]],
-    ["🎮 Tester", []],
-    ["📢 Community", []],
-    ["👤 Member", []],
-    ["✅ Verified", []],
-  ];
-
-  for (const [name, perms] of roleData) {
-    roles[name] = await makeRole(guild, {
-      name,
-      permissions: perms,
-      mentionable: true
-    });
+  if (g.config.autoroleId) {
+    const role = member.guild.roles.cache.get(g.config.autoroleId);
+    if (role) await member.roles.add(role).catch(() => {});
   }
 
-  // =========================
-  // PERMISSIONS SHORTCUTS
-  // =========================
+  if (g.config.welcome) {
+    await member.send(applyTemplate(g.config.welcome, member.user, member.guild.name)).catch(() => {});
+  }
+});
 
-  const staffOnly = [
-    { id: everyone, deny: [PermissionsBitField.Flags.ViewChannel] },
-    { id: roles["👑 Founder"].id, allow: [PermissionsBitField.Flags.ViewChannel] },
-    { id: roles["🖤 Co-Owner"].id, allow: [PermissionsBitField.Flags.ViewChannel] },
-    { id: roles["🛡️ Head Admin"].id, allow: [PermissionsBitField.Flags.ViewChannel] },
-    { id: roles["🔍 Moderator"].id, allow: [PermissionsBitField.Flags.ViewChannel] },
-  ];
+client.on(Events.GuildMemberRemove, async (member) => {
+  const g = guild(db, member.guild.id);
+  if (g.config.goodbye) {
+    await member.user.send(applyTemplate(g.config.goodbye, member.user, member.guild.name)).catch(() => {});
+  }
+});
 
-  const devOnly = [
-    { id: everyone, deny: [PermissionsBitField.Flags.ViewChannel] },
-    { id: roles["👑 Founder"].id, allow: [PermissionsBitField.Flags.ViewChannel] },
-    { id: roles["🖤 Co-Owner"].id, allow: [PermissionsBitField.Flags.ViewChannel] },
-    { id: roles["💻 Developer"].id, allow: [PermissionsBitField.Flags.ViewChannel] },
-  ];
+client.on(Events.MessageCreate, async (message) => {
+  if (!message.guild || message.author.bot) return;
+  const g = guild(db, message.guild.id);
 
-  const publicPerms = [
-    { id: everyone, allow: [PermissionsBitField.Flags.ViewChannel] }
-  ];
+  if (g.afk[message.author.id]) {
+    delete g.afk[message.author.id];
+    await message.reply(`👋 Welcome back ${message.author.tag}. AFK removed.`).catch(() => {});
+    saveDB();
+  }
 
-  // =========================
-  // CATEGORIES
-  // =========================
+  const mentions = [...message.mentions.users.values()];
+  for (const u of mentions) {
+    const afk = g.afk[u.id];
+    if (afk) {
+      await message.reply(`💤 ${u.tag} is AFK: ${afk.reason}`).catch(() => {});
+      break;
+    }
+  }
 
-  const info = await makeCategory(guild, "📌 INFORMATION", publicPerms);
-  const community = await makeCategory(guild, "💬 COMMUNITY", publicPerms);
-  const dev = await makeCategory(guild, "💻 DEVELOPMENT", devOnly);
-  const art = await makeCategory(guild, "🎨 ART", publicPerms);
-  const staff = await makeCategory(guild, "🔒 STAFF", staffOnly);
+  for (const rule of g.chatFilters) {
+    const re = new RegExp(`\\b${escapeRegex(rule.word)}\\b`, "i");
+    if (re.test(message.content)) {
+      const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+      if (!member) break;
+      const currentCount = (rule.count || 0) + 1;
+      rule.count = currentCount;
 
-  // =========================
-  // CHANNELS
-  // =========================
+      const timeoutMs = rule.duration + Math.max(0, currentCount - 1) * rule.extension;
+      await member.timeout(timeoutMs, `Chat restrict matched: ${rule.word}`).catch(() => {});
+      message.channel.send(`⚠️ ${message.author} used a restricted word. Timeout applied.`).catch(() => {});
+      saveDB();
+      break;
+    }
+  }
 
-  await makeChannel(guild, "welcome", ChannelType.GuildText, info.id, publicPerms);
-  await makeChannel(guild, "rules", ChannelType.GuildText, info.id, publicPerms);
-  await makeChannel(guild, "announcements", ChannelType.GuildText, info.id, publicPerms);
+  saveDB();
+});
 
-  await makeChannel(guild, "general", ChannelType.GuildText, community.id, publicPerms);
-  await makeChannel(guild, "ideas", ChannelType.GuildText, community.id, publicPerms);
-  await makeChannel(guild, "bug-reports", ChannelType.GuildText, community.id, publicPerms);
+client.on(Events.InteractionCreate, async (interaction) => {
+  try {
+    if (interaction.isChatInputCommand()) {
+      await run(interaction, db, client);
+      saveDB();
+      return;
+    }
 
-  await makeChannel(guild, "dev-chat", ChannelType.GuildText, dev.id, devOnly);
-  await makeChannel(guild, "builds", ChannelType.GuildText, dev.id, devOnly);
-  await makeChannel(guild, "playtests", ChannelType.GuildText, dev.id, devOnly);
+    if (interaction.isStringSelectMenu()) {
+      if (!interaction.customId.startsWith("ticketspawn:")) return;
 
-  await makeChannel(guild, "concept-art", ChannelType.GuildText, art.id, publicPerms);
-  await makeChannel(guild, "screenshots", ChannelType.GuildText, art.id, publicPerms);
+      const g = guild(interaction.guild.id);
+      const choice = interaction.values[0];
+      const label = choice.split("_").slice(2).join("_") || "ticket";
+      const channel = await interaction.guild.channels.create({
+        name: `ticket-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+        type: 0,
+        permissionOverwrites: [
+          { id: interaction.guild.roles.everyone.id, deny: ["ViewChannel"] },
+          { id: interaction.user.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] },
+          { id: interaction.guild.members.me.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory", "ManageChannels"] }
+        ]
+      });
 
-  await makeChannel(guild, "staff-chat", ChannelType.GuildText, staff.id, staffOnly);
-  await makeChannel(guild, "logs", ChannelType.GuildText, staff.id, staffOnly);
+      g.tickets[channel.id] = {
+        ownerId: interaction.user.id,
+        type: label,
+        openedAt: Date.now()
+      };
 
-  await interaction.editReply("Server structure complete.");
+      const ticketLog = g.config.ticketLogChannelId ? interaction.guild.channels.cache.get(g.config.ticketLogChannelId) : null;
+      if (ticketLog) ticketLog.send(`🎫 Ticket opened by <@${interaction.user.id}>: **${label}**`).catch(() => {});
+
+      await channel.send(`🎫 <@${interaction.user.id}> opened a ticket for **${label}**`).catch(() => {});
+      await interaction.reply({ content: `✅ Ticket created: ${channel}`, ephemeral: true }).catch(() => {});
+      saveDB();
+    }
+  } catch (err) {
+    console.error(err);
+    if (interaction.isRepliable()) {
+      const payload = { content: "❌ Something broke.", ephemeral: true };
+      if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
+      else await interaction.reply(payload).catch(() => {});
+    }
+  }
 });
 
 client.login(process.env.BOT_TOKEN);

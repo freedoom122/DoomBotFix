@@ -1,13 +1,14 @@
 {
-  "name": "doomsmp-bot",
+  "name": "doombotfix",
   "version": "1.0.0",
   "main": "index.js",
+  "type": "commonjs",
   "scripts": {
     "start": "node index.js",
-    "deploy": "node deploy-commands.js"
+    "deploy": "node deploy.js"
   },
   "dependencies": {
-    "discord.js": "^14.15.2",
-    "dotenv": "^16.4.5"
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.4.7"
   }
 }
